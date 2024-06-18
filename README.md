@@ -1,6 +1,8 @@
 # Solutions for advent-of-distributed-systems challenge
 
-Follow installation guide at - [text](https://github.com/jepsen-io/maelstrom/blob/main/doc/01-getting-ready/index.md)
+Challenge link - [aods.cryingpotato.com](https://aods.cryingpotato.com/)
+
+Follow instructions here - [Maelstrom Installation guide](https://github.com/jepsen-io/maelstrom/blob/main/doc/01-getting-ready/index.md)
 
 Steps to test this code using maelstrom -
 1. run ```go install .``` in the project directory.
