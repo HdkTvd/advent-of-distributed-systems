@@ -11,7 +11,7 @@ func main() {
 	n := maelstrom.NewNode()
 	n.Handle("echo", func(msg maelstrom.Message) error {
 		// Unmarshal the message body as an loosely-typed map.
-		var body map[string]any
+		var body map[string]interface{}
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
