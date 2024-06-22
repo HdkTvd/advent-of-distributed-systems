@@ -10,5 +10,6 @@ func main() {
 	// week0.Maelstrom_echo()
 	// week1.Unique_id_generation()
 	// week2.Single_node_broadcast()
-	week2.Multi_node_broadcast()
+	// week2.Multi_node_broadcast()
+	week2.Fault_tolerant_broadcast()
 }
