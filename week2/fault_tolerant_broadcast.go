@@ -1,6 +1,7 @@
 package week2
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,8 @@ func Fault_tolerant_broadcast() {
 	maelstromNode := maelstrom.NewNode()
 
 	maelstromNode.Handle("broadcast", func(msg maelstrom.Message) error {
+		ctx := context.Background()
+
 		reqBody := make(map[string]interface{})
 		if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
 			fmt.Fprintf(os.Stderr, "Error unmarshalling message [%v]\n", err)
@@ -78,26 +81,26 @@ func Fault_tolerant_broadcast() {
 				continue
 			}
 
+			// maelstromNode.
+
 			// TODO: replay messages which has failed due to network failure after some period of time.
-			if err := replayRPCSend(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, adjacentNode.(string), func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error {
-				if err := maelstromNode.RPC(dest, payload, func(msg maelstrom.Message) error {
-					reqBody := make(map[string]interface{})
-					if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
-						return err
-					}
-
-					// FIXME: no signs of error in case of network broadcast failure
-					if reqBody["type"].(string) != "broadcast_ok" {
-						fmt.Fprintf(os.Stderr, "Error: Broadcast not okay for msg - %v | node - %v", message, dest, "\n")
-
-						return errors.New("broadcast response failure")
-					}
-
-					return nil
-				}); err != nil {
+			if err := replayRPCSend(ctx, replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, adjacentNode.(string), func(ctx context.Context, maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error {
+				msg, err := maelstromNode.SyncRPC(ctx, dest, payload)
+				if err != nil {
 					// FIXME: no signs of error in case of network broadcast failure
 					fmt.Fprintf(os.Stderr, "Error: Broadcast failed for msg - %v | node - %v", message, dest, "\n")
 					return err
+				}
+
+				reqBody := make(map[string]interface{})
+				if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
+					return err
+				}
+
+				// FIXME: no signs of error in case of network broadcast failure
+				if reqBody["type"].(string) != "broadcast_ok" {
+					fmt.Fprintf(os.Stderr, "Error: Broadcast not okay for msg - %v | node - %v", message, dest, "\n")
+					return errors.New("broadcast response failure")
 				}
 
 				return nil
@@ -156,10 +159,10 @@ func Fault_tolerant_broadcast() {
 	}
 }
 
-func replayRPCSend(replayCount int, waitPeriod time.Duration, maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string, replayFunc func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error) error {
+func replayRPCSend(ctx context.Context, replayCount int, waitPeriod time.Duration, maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string, replayFunc func(ctx context.Context, maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error) error {
 	var err error
 	for replay := 0; replay < replayCount; {
-		if err = replayFunc(maelstromNode, payload, dest); err != nil {
+		if err = replayFunc(ctx, maelstromNode, payload, dest); err != nil {
 			replay++
 			fmt.Fprintf(os.Stderr, "Debug: retrying broadcast for %v", dest)
 			time.Sleep(waitPeriod * time.Second)
