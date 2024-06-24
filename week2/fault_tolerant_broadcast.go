@@ -18,15 +18,15 @@ func Fault_tolerant_broadcast() {
 	messages := make(map[string][]int, 0)
 	topology := make(map[string]interface{}, 0)
 
-	replayCount := 3
-	waitPeriodInSeconds := 2
+	replayCount := 5
+	waitPeriodInSeconds := 1
 
 	maelstromNode := maelstrom.NewNode()
 
 	maelstromNode.Handle("broadcast", func(msg maelstrom.Message) error {
 		reqBody := make(map[string]interface{})
 		if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
-			log.Printf("Error unmarshalling message [%v]\n", err)
+			fmt.Fprintf(os.Stderr, "Error unmarshalling message [%v]\n", err)
 			return err
 		}
 
@@ -43,10 +43,17 @@ func Fault_tolerant_broadcast() {
 			messages[nodeId] = messageList
 		}
 
-		if err := maelstromNode.Reply(msg, map[string]interface{}{
-			"type": "broadcast_ok",
+		if err := replayBroadcastAck(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, msg, func(maelstromNode *maelstrom.Node, msg maelstrom.Message) error {
+			if err := maelstromNode.Reply(msg, map[string]interface{}{
+				"type": "broadcast_ok",
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error sending message [%v]\n", err)
+				return err
+			}
+
+			return nil
 		}); err != nil {
-			log.Printf("Error sending message [%v]\n", err)
+			fmt.Fprintf(os.Stderr, "Error acknowledging broadcast message - [%v]\n", err)
 			return err
 		}
 
@@ -56,7 +63,7 @@ func Fault_tolerant_broadcast() {
 		}
 		receivers[msg.Dest] = true
 
-		fmt.Fprintf(os.Stderr, "Debug: Previous receivers of this message -> %v | %v", message, receivers, "\n")
+		// fmt.Fprintf(os.Stderr, "Debug: Previous receivers of this message -> %v | %v", message, receivers, "\n")
 
 		payload := map[string]interface{}{
 			"type":      "broadcast",
@@ -95,7 +102,8 @@ func Fault_tolerant_broadcast() {
 
 				return nil
 			}); err != nil {
-				log.Printf("Error broadcasting message to node [%v] - [%v]\n", adjacentNode, err)
+				fmt.Fprintf(os.Stderr, "Error broadcasting message to node [%v] - [%v]\n", adjacentNode, err)
+				return err
 			}
 		}
 
@@ -116,7 +124,7 @@ func Fault_tolerant_broadcast() {
 			}
 			return nil
 		}); err != nil {
-			log.Printf("Error sending message [%v]\n", err)
+			fmt.Fprintf(os.Stderr, "Error sending message [%v]\n", err)
 			return err
 		}
 
@@ -126,7 +134,7 @@ func Fault_tolerant_broadcast() {
 	maelstromNode.Handle("topology", func(msg maelstrom.Message) error {
 		reqBody := make(map[string]interface{})
 		if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
-			log.Printf("Error unmarshalling message [%v]\n", err)
+			fmt.Fprintf(os.Stderr, "Error unmarshalling message [%v]\n", err)
 			return err
 		}
 
@@ -135,7 +143,7 @@ func Fault_tolerant_broadcast() {
 		if err := maelstromNode.Reply(msg, map[string]interface{}{
 			"type": "topology_ok",
 		}); err != nil {
-			log.Printf("Error sending message [%v]\n", err)
+			fmt.Fprintf(os.Stderr, "Error sending message [%v]\n", err)
 			return err
 		}
 
@@ -150,10 +158,11 @@ func Fault_tolerant_broadcast() {
 
 func replayRPCSend(replayCount int, waitPeriod time.Duration, maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string, replayFunc func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error) error {
 	var err error
-	for replay := 0; replay < replayCount; replay++ {
+	for replay := 0; replay < replayCount; {
 		if err = replayFunc(maelstromNode, payload, dest); err != nil {
 			replay++
-			time.Sleep(waitPeriod)
+			fmt.Fprintf(os.Stderr, "Debug: retrying broadcast for %v", dest)
+			time.Sleep(waitPeriod * time.Second)
 		} else {
 			return nil
 		}
@@ -164,10 +173,26 @@ func replayRPCSend(replayCount int, waitPeriod time.Duration, maelstromNode *mae
 
 func replayRPCReply(replayCount int, waitPeriod time.Duration, maelstromNode *maelstrom.Node, payload map[string]interface{}, replayFunc func(maelstromNode *maelstrom.Node, payload map[string]interface{}) error) error {
 	var err error
-	for replay := 0; replay < replayCount; replay++ {
+	for replay := 0; replay < replayCount; {
 		if err = replayFunc(maelstromNode, payload); err != nil {
 			replay++
-			time.Sleep(waitPeriod)
+			fmt.Fprintf(os.Stderr, "Debug: retrying reply from %v", maelstromNode.ID())
+			time.Sleep(waitPeriod * time.Second)
+		} else {
+			return nil
+		}
+	}
+
+	return err
+}
+
+func replayBroadcastAck(replayCount int, waitPeriod time.Duration, maelstromNode *maelstrom.Node, msg maelstrom.Message, replayFunc func(maelstromNode *maelstrom.Node, msg maelstrom.Message) error) error {
+	var err error
+	for replay := 0; replay < replayCount; {
+		if err = replayFunc(maelstromNode, msg); err != nil {
+			replay++
+			fmt.Fprintf(os.Stderr, "Debug: retrying reply from %v", maelstromNode.ID())
+			time.Sleep(waitPeriod * time.Second)
 		} else {
 			return nil
 		}
