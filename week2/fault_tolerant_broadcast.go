@@ -81,7 +81,7 @@ func Fault_tolerant_broadcast() {
 
 					// FIXME: no signs of error in case of network broadcast failure
 					if reqBody["type"].(string) != "broadcast_ok" {
-						fmt.Fprintf(os.Stderr, "Debug: Broadcast not okay for msg - %v | node - %v", message, dest, "\n")
+						fmt.Fprintf(os.Stderr, "Error: Broadcast not okay for msg - %v | node - %v", message, dest, "\n")
 
 						return errors.New("broadcast response failure")
 					}
@@ -89,7 +89,7 @@ func Fault_tolerant_broadcast() {
 					return nil
 				}); err != nil {
 					// FIXME: no signs of error in case of network broadcast failure
-					fmt.Fprintf(os.Stderr, "Debug: Broadcast failed for msg - %v | node - %v", message, dest, "\n")
+					fmt.Fprintf(os.Stderr, "Error: Broadcast failed for msg - %v | node - %v", message, dest, "\n")
 					return err
 				}
 
@@ -104,9 +104,17 @@ func Fault_tolerant_broadcast() {
 
 	// TODO: replay read operation too?
 	maelstromNode.Handle("read", func(msg maelstrom.Message) error {
-		if err := maelstromNode.Reply(msg, map[string]interface{}{
+		payload := map[string]interface{}{
 			"type":     "read_ok",
 			"messages": messages[maelstromNode.ID()],
+		}
+
+		if err := replayRPCReply(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, func(maelstromNode *maelstrom.Node, payload map[string]interface{}) error {
+			if err := maelstromNode.Reply(msg, payload); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: Reply not okay for msg - %v", payload, "\n")
+				return err
+			}
+			return nil
 		}); err != nil {
 			log.Printf("Error sending message [%v]\n", err)
 			return err
@@ -144,6 +152,20 @@ func replayRPCSend(replayCount int, waitPeriod time.Duration, maelstromNode *mae
 	var err error
 	for replay := 0; replay < replayCount; replay++ {
 		if err = replayFunc(maelstromNode, payload, dest); err != nil {
+			replay++
+			time.Sleep(waitPeriod)
+		} else {
+			return nil
+		}
+	}
+
+	return err
+}
+
+func replayRPCReply(replayCount int, waitPeriod time.Duration, maelstromNode *maelstrom.Node, payload map[string]interface{}, replayFunc func(maelstromNode *maelstrom.Node, payload map[string]interface{}) error) error {
+	var err error
+	for replay := 0; replay < replayCount; replay++ {
+		if err = replayFunc(maelstromNode, payload); err != nil {
 			replay++
 			time.Sleep(waitPeriod)
 		} else {
