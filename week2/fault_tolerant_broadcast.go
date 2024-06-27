@@ -15,7 +15,7 @@ import (
 func Fault_tolerant_broadcast() {
 	var mu sync.Mutex
 	// TODO: node Id to messages link required? Doesn't nodes have it's own working memory?
-	messages := make(map[string][]int, 0)
+	messages := make([]int, 0)
 	topology := make(map[string]interface{}, 0)
 
 	replayCount := 5
@@ -33,15 +33,9 @@ func Fault_tolerant_broadcast() {
 		message := int(reqBody["message"].(float64))
 		nodeId := maelstromNode.ID()
 
-		if messageList, nodeExists := messages[nodeId]; !nodeExists {
-			messages[nodeId] = []int{message}
-		} else {
-			mu.Lock()
-			messageList = append(messageList, message)
-			mu.Unlock()
-
-			messages[nodeId] = messageList
-		}
+		mu.Lock()
+		messages = append(messages, message)
+		mu.Unlock()
 
 		if err := replayBroadcastAck(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, msg, func(maelstromNode *maelstrom.Node, msg maelstrom.Message) error {
 			if err := maelstromNode.Reply(msg, map[string]interface{}{
@@ -78,32 +72,31 @@ func Fault_tolerant_broadcast() {
 				continue
 			}
 
-			// TODO: replay messages which has failed due to network failure after some period of time.
-			if err := replayRPCSend(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, adjacentNode.(string), func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error {
-				if err := maelstromNode.RPC(dest, payload, func(msg maelstrom.Message) error {
-					reqBody := make(map[string]interface{})
-					if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
-						return err
-					}
+			go func() {
+				// replay messages which has failed due to network failure after some period of time.
+				if err := replayRPCSend(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, adjacentNode.(string), func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error {
+					if err := maelstromNode.RPC(dest, payload, func(msg maelstrom.Message) error {
+						reqBody := make(map[string]interface{})
+						if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
+							return err
+						}
 
-					// FIXME: no signs of error in case of network broadcast failure
-					if reqBody["type"].(string) != "broadcast_ok" {
-						fmt.Fprintf(os.Stderr, "Error: Broadcast not okay for msg - %v | node - %v", message, dest, "\n")
-						return errors.New("broadcast response failure")
+						// no signs of error in case of network broadcast failure # Maelstorm issue
+						if reqBody["type"].(string) != "broadcast_ok" {
+							return errors.New("broadcast response failure")
+						}
+
+						return nil
+					}); err != nil {
+						// no signs of error in case of network broadcast failure # Maelstorm issue
+						return err
 					}
 
 					return nil
 				}); err != nil {
-					// FIXME: no signs of error in case of network broadcast failure
-					fmt.Fprintf(os.Stderr, "Error: Broadcast failed for msg - %v | node - %v", message, dest, "\n")
-					return err
+					fmt.Fprintf(os.Stderr, "Error broadcasting message to node [%v] - [%v]\n", adjacentNode, err)
 				}
-
-				return nil
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error broadcasting message to node [%v] - [%v]\n", adjacentNode, err)
-				return err
-			}
+			}()
 		}
 
 		return nil
@@ -112,7 +105,7 @@ func Fault_tolerant_broadcast() {
 	maelstromNode.Handle("read", func(msg maelstrom.Message) error {
 		payload := map[string]interface{}{
 			"type":     "read_ok",
-			"messages": messages[maelstromNode.ID()],
+			"messages": messages,
 		}
 
 		if err := replayRPCReply(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, func(maelstromNode *maelstrom.Node, payload map[string]interface{}) error {
@@ -159,7 +152,6 @@ func replayRPCSend(replayCount int, waitPeriod time.Duration, maelstromNode *mae
 	for replay := 0; replay < replayCount; {
 		if err = replayFunc(maelstromNode, payload, dest); err != nil {
 			replay++
-			fmt.Fprintf(os.Stderr, "Debug: retrying broadcast for %v", dest)
 			time.Sleep(waitPeriod * time.Second)
 		} else {
 			return nil
@@ -174,7 +166,6 @@ func replayRPCReply(replayCount int, waitPeriod time.Duration, maelstromNode *ma
 	for replay := 0; replay < replayCount; {
 		if err = replayFunc(maelstromNode, payload); err != nil {
 			replay++
-			fmt.Fprintf(os.Stderr, "Debug: retrying reply from %v", maelstromNode.ID())
 			time.Sleep(waitPeriod * time.Second)
 		} else {
 			return nil
@@ -189,7 +180,6 @@ func replayBroadcastAck(replayCount int, waitPeriod time.Duration, maelstromNode
 	for replay := 0; replay < replayCount; {
 		if err = replayFunc(maelstromNode, msg); err != nil {
 			replay++
-			fmt.Fprintf(os.Stderr, "Debug: retrying reply from %v", maelstromNode.ID())
 			time.Sleep(waitPeriod * time.Second)
 		} else {
 			return nil
