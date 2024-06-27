@@ -65,6 +65,7 @@ func Fault_tolerant_broadcast_v3() {
 				continue
 			}
 
+			// TODO: modify retry count or implement job channel like v2
 			go func() {
 				// replay messages which has failed due to network failure after some period of time.
 				if err := replayRPCSend(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, adjacentNode.(string), func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error {
