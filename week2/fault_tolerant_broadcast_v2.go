@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"sync"
+	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
@@ -18,35 +19,84 @@ type job struct {
 	Value any
 }
 
-func consumeJobChannel(queue chan job, n *maelstrom.Node) {
+type persistentQueue struct {
+	mu     sync.Mutex
+	queue  []job
+	ackMap map[job]bool
+}
+
+func newPersistentQueue() *persistentQueue {
+	return &persistentQueue{
+		queue:  make([]job, 0),
+		ackMap: make(map[job]bool),
+	}
+}
+
+func (pq *persistentQueue) addJob(j job) {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	pq.queue = append(pq.queue, j)
+}
+
+func (pq *persistentQueue) getJob() (job, bool) {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	if len(pq.queue) == 0 {
+		return job{}, false
+	}
+	j := pq.queue[0]
+	pq.queue = pq.queue[1:]
+	return j, true
+}
+
+func (pq *persistentQueue) markAcked(j job) {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	pq.ackMap[j] = true
+}
+
+func (pq *persistentQueue) isAcked(j job) bool {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	return pq.ackMap[j]
+}
+
+func consumeJobChannel(pq *persistentQueue, n *maelstrom.Node) {
 	log.Printf("Started job queue")
 	for {
-		j, _ := <-queue
+		j, ok := pq.getJob()
+		if !ok {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
 		go func(jb job) {
 			body := map[string]any{}
 			body["type"] = "broadcast"
 			body["message"] = jb.Value
 
-			if err := n.RPC(jb.Dest, body, func(msg maelstrom.Message) error {
-				resBody := map[string]any{}
-				if err := json.Unmarshal(msg.Body, &resBody); err != nil {
-					log.Printf("Retry %v after err %v\n", jb, err.Error())
-					queue <- jb
-					return err
+			attempt := 0
+			for {
+				if err := n.RPC(jb.Dest, body, func(msg maelstrom.Message) error {
+					resBody := map[string]any{}
+					if err := json.Unmarshal(msg.Body, &resBody); err != nil {
+						return err
+					}
+					typ := reflect.ValueOf(resBody["type"]).String()
+					if typ != "broadcast_ok" {
+						return errors.New("broadcast not ok")
+					}
+					pq.markAcked(jb)
+					return nil
+				}); err != nil {
+					if pq.isAcked(jb) {
+						return
+					}
+					attempt++
+					log.Printf("Retry %v after err %v, attempt %d\n", jb, err.Error(), attempt)
+					time.Sleep(time.Duration(attempt) * time.Second)
+				} else {
+					break
 				}
-				log.Printf("saw %v and got %v", jb, resBody)
-				typ := reflect.ValueOf(resBody["type"]).String()
-				if typ != "broadcast_ok" {
-					log.Printf("Retry %v after return type %v\n", jb, typ)
-					queue <- jb
-					return errors.New("broadcast not ok")
-				}
-
-				return nil
-			}); err != nil {
-				log.Printf("Retry %v after err %v\n", jb, err.Error())
-				queue <- jb
-				return
 			}
 		}(j)
 	}
@@ -59,12 +109,10 @@ func Fault_tolerant_broadcast_v2() {
 	values := make(map[any]bool)
 	topology := make(map[string]interface{})
 
-	queue := make(chan job)
-
-	go consumeJobChannel(queue, n)
+	pq := newPersistentQueue()
+	go consumeJobChannel(pq, n)
 
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
-		// Unmarshal the message body as an loosely-typed map.
 		var body map[string]any
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
@@ -81,14 +129,14 @@ func Fault_tolerant_broadcast_v2() {
 		}
 		mu.Unlock()
 
-		if seen == false {
-			for _, node := range n.NodeIDs() {
-				if node != n.ID() && node != msg.Src {
-					queue <- job{
+		if !seen {
+			for _, node := range topology[n.ID()].([]interface{}) {
+				if node.(string) != msg.Src {
+					pq.addJob(job{
 						Src:   n.ID(),
-						Dest:  node,
+						Dest:  node.(string),
 						Value: message,
-					}
+					})
 				}
 			}
 		}
@@ -97,7 +145,6 @@ func Fault_tolerant_broadcast_v2() {
 	})
 
 	n.Handle("read", func(msg maelstrom.Message) error {
-		// Unmarshal the message body as an loosely-typed map.
 		var body map[string]any
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
@@ -116,11 +163,9 @@ func Fault_tolerant_broadcast_v2() {
 		body["messages"] = keys
 
 		return n.Reply(msg, body)
-
 	})
 
 	n.Handle("topology", func(msg maelstrom.Message) error {
-		// Unmarshal the message body as an loosely-typed map.
 		var body map[string]any
 		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
