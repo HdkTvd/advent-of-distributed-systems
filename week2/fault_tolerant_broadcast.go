@@ -152,7 +152,7 @@ func replayRPCSend(replayCount int, waitPeriod time.Duration, maelstromNode *mae
 	for replay := 0; replay < replayCount; {
 		if err = replayFunc(maelstromNode, payload, dest); err != nil {
 			replay++
-			time.Sleep(waitPeriod * time.Second)
+			time.Sleep(waitPeriod * time.Millisecond)
 		} else {
 			return nil
 		}
