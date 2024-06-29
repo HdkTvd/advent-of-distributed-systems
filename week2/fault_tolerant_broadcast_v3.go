@@ -18,8 +18,8 @@ func Fault_tolerant_broadcast_v3() {
 	messages := make([]int, 0)
 	topology := make(map[string]interface{}, 0)
 
-	replayCount := 5
-	waitPeriodInSeconds := 1
+	replayCount := 20
+	waitPeriodInMilliSeconds := 100
 
 	maelstromNode := maelstrom.NewNode()
 
@@ -68,7 +68,7 @@ func Fault_tolerant_broadcast_v3() {
 			// TODO: modify retry count or implement job channel like v2
 			go func() {
 				// replay messages which has failed due to network failure after some period of time.
-				if err := replayRPCSend(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, adjacentNode.(string), func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error {
+				if err := replayRPCSend(replayCount, time.Duration(waitPeriodInMilliSeconds), maelstromNode, payload, adjacentNode.(string), func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error {
 					if err := maelstromNode.RPC(dest, payload, func(msg maelstrom.Message) error {
 						reqBody := make(map[string]interface{})
 						if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
