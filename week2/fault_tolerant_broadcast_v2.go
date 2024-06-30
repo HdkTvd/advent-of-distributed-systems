@@ -21,38 +21,19 @@ type job struct {
 
 type persistentQueue struct {
 	mu     sync.Mutex
-	queue  []job
 	ackMap map[job]bool
 }
 
 func newPersistentQueue() *persistentQueue {
 	return &persistentQueue{
-		queue:  make([]job, 0),
 		ackMap: make(map[job]bool),
 	}
 }
 
-func (pq *persistentQueue) addJob(j job) {
-	pq.mu.Lock()
-	defer pq.mu.Unlock()
-	pq.queue = append(pq.queue, j)
-}
-
-func (pq *persistentQueue) getJob() (job, bool) {
-	pq.mu.Lock()
-	defer pq.mu.Unlock()
-	if len(pq.queue) == 0 {
-		return job{}, false
-	}
-	j := pq.queue[0]
-	pq.queue = pq.queue[1:]
-	return j, true
-}
-
 func (pq *persistentQueue) markAcked(j job) {
 	pq.mu.Lock()
-	defer pq.mu.Unlock()
 	pq.ackMap[j] = true
+	pq.mu.Unlock()
 }
 
 func (pq *persistentQueue) isAcked(j job) bool {
@@ -61,14 +42,12 @@ func (pq *persistentQueue) isAcked(j job) bool {
 	return pq.ackMap[j]
 }
 
-func consumeJobChannel(pq *persistentQueue, n *maelstrom.Node) {
+func consumeJobChannel(jobChan chan job, pq *persistentQueue, n *maelstrom.Node) {
 	log.Printf("Started job queue")
-	for {
-		j, ok := pq.getJob()
-		if !ok {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
+
+	factor := 50
+
+	for j := range jobChan {
 		go func(jb job) {
 			body := map[string]any{}
 			body["type"] = "broadcast"
@@ -85,18 +64,19 @@ func consumeJobChannel(pq *persistentQueue, n *maelstrom.Node) {
 					if typ != "broadcast_ok" {
 						return errors.New("broadcast not ok")
 					}
+
+					fmt.Fprintf(os.Stderr, "Acknowledged msg - %v, dest - %v \n", jb.Value, jb.Dest)
 					pq.markAcked(jb)
+
 					return nil
-				}); err != nil {
-					if pq.isAcked(jb) {
-						return
-					}
+				}); err != nil || !pq.isAcked(jb) {
 					attempt++
-					log.Printf("Retry %v after err %v, attempt %d\n", jb, err.Error(), attempt)
-					time.Sleep(time.Duration(attempt) * time.Second)
-				} else {
-					break
+					fmt.Fprintf(os.Stderr, "Retry %v after err %v, attempt %d\n", jb, "retrying because not acknowledged", attempt)
+					time.Sleep(time.Duration(attempt*factor) * time.Millisecond)
+					continue
 				}
+
+				break
 			}
 		}(j)
 	}
@@ -107,10 +87,12 @@ func Fault_tolerant_broadcast_v2() {
 
 	mu := &sync.Mutex{}
 	values := make(map[any]bool)
-	topology := make(map[string]interface{})
+	topology := make([]string, 0)
 
+	jobChan := make(chan job, 100)
 	pq := newPersistentQueue()
-	go consumeJobChannel(pq, n)
+
+	go consumeJobChannel(jobChan, pq, n)
 
 	n.Handle("broadcast", func(msg maelstrom.Message) error {
 		var body map[string]any
@@ -130,13 +112,14 @@ func Fault_tolerant_broadcast_v2() {
 		mu.Unlock()
 
 		if !seen {
-			for _, node := range topology[n.ID()].([]interface{}) {
-				if node.(string) != msg.Src {
-					pq.addJob(job{
+			for _, neighbor := range topology {
+				if neighbor != msg.Src {
+					fmt.Fprintf(os.Stderr, "Adding job, src - %v, dst - %v, message - %v\n", n.ID(), neighbor, message)
+					jobChan <- job{
 						Src:   n.ID(),
-						Dest:  node.(string),
+						Dest:  neighbor,
 						Value: message,
-					})
+					}
 				}
 			}
 		}
@@ -171,7 +154,10 @@ func Fault_tolerant_broadcast_v2() {
 			return err
 		}
 
-		topology = body["topology"].(map[string]interface{})
+		topologyFromClient := body["topology"].(map[string]interface{})
+		for _, neighbor := range topologyFromClient[n.ID()].([]interface{}) {
+			topology = append(topology, neighbor.(string))
+		}
 
 		body = map[string]any{}
 		body["type"] = "topology_ok"
