@@ -6,185 +6,168 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-func Fault_tolerant_broadcast() {
-	var mu sync.Mutex
-	// TODO: node Id to messages link required? Doesn't nodes have it's own working memory?
-	messages := make([]int, 0)
-	topology := make(map[string]interface{}, 0)
+type job struct {
+	Src   string
+	Dest  string
+	Value any
+}
 
-	replayCount := 5
-	waitPeriodInSeconds := 1
+type persistentQueue struct {
+	mu     sync.Mutex
+	ackMap map[job]bool
+}
 
-	maelstromNode := maelstrom.NewNode()
+func newPersistentQueue() *persistentQueue {
+	return &persistentQueue{
+		ackMap: make(map[job]bool),
+	}
+}
 
-	maelstromNode.Handle("broadcast", func(msg maelstrom.Message) error {
-		reqBody := make(map[string]interface{})
-		if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
-			fmt.Fprintf(os.Stderr, "Error unmarshalling message [%v]\n", err)
-			return err
-		}
+func (pq *persistentQueue) markAcked(j job) {
+	pq.mu.Lock()
+	pq.ackMap[j] = true
+	pq.mu.Unlock()
+}
 
-		message := int(reqBody["message"].(float64))
-		nodeId := maelstromNode.ID()
+func (pq *persistentQueue) isAcked(j job) bool {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+	return pq.ackMap[j]
+}
 
-		mu.Lock()
-		messages = append(messages, message)
-		mu.Unlock()
+func consumeJobChannel(jobChan chan job, pq *persistentQueue, n *maelstrom.Node) {
+	log.Printf("Started job queue")
 
-		if err := replayBroadcastAck(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, msg, func(maelstromNode *maelstrom.Node, msg maelstrom.Message) error {
-			if err := maelstromNode.Reply(msg, map[string]interface{}{
-				"type": "broadcast_ok",
-			}); err != nil {
-				fmt.Fprintf(os.Stderr, "Error sending message [%v]\n", err)
-				return err
-			}
+	factor := 50
 
-			return nil
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Error acknowledging broadcast message - [%v]\n", err)
-			return err
-		}
+	for j := range jobChan {
+		go func(jb job) {
+			body := map[string]any{}
+			body["type"] = "broadcast"
+			body["message"] = jb.Value
 
-		receivers := make(map[string]interface{}, 0)
-		if reqBody["receivers"] != nil {
-			receivers = reqBody["receivers"].(map[string]interface{})
-		}
-		receivers[msg.Dest] = true
-
-		// fmt.Fprintf(os.Stderr, "Debug: Previous receivers of this message -> %v | %v", message, receivers, "\n")
-
-		payload := map[string]interface{}{
-			"type":      "broadcast",
-			"message":   message,
-			"receivers": receivers,
-		}
-
-		// Nodes can communicate bidirectionally, this incurs repetition in messages
-		// check prev receivers, do not send if present in the list
-		for _, adjacentNode := range topology[nodeId].([]interface{}) {
-			if _, ok := receivers[adjacentNode.(string)]; ok {
-				continue
-			}
-
-			go func() {
-				// replay messages which has failed due to network failure after some period of time.
-				if err := replayRPCSend(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, adjacentNode.(string), func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error {
-					if err := maelstromNode.RPC(dest, payload, func(msg maelstrom.Message) error {
-						reqBody := make(map[string]interface{})
-						if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
-							return err
-						}
-
-						// no signs of error in case of network broadcast failure # Maelstorm issue
-						if reqBody["type"].(string) != "broadcast_ok" {
-							return errors.New("broadcast response failure")
-						}
-
-						return nil
-					}); err != nil {
-						// no signs of error in case of network broadcast failure # Maelstorm issue
+			attempt := 0
+			for {
+				if err := n.RPC(jb.Dest, body, func(msg maelstrom.Message) error {
+					resBody := map[string]any{}
+					if err := json.Unmarshal(msg.Body, &resBody); err != nil {
 						return err
 					}
+					typ := reflect.ValueOf(resBody["type"]).String()
+					if typ != "broadcast_ok" {
+						return errors.New("broadcast not ok")
+					}
+
+					fmt.Fprintf(os.Stderr, "Acknowledged msg - %v, dest - %v \n", jb.Value, jb.Dest)
+					pq.markAcked(jb)
 
 					return nil
-				}); err != nil {
-					fmt.Fprintf(os.Stderr, "Error broadcasting message to node [%v] - [%v]\n", adjacentNode, err)
+				}); err != nil || !pq.isAcked(jb) {
+					attempt++
+					fmt.Fprintf(os.Stderr, "Retry %v after err %v, attempt %d\n", jb, "retrying because not acknowledged", attempt)
+					time.Sleep(time.Duration(attempt*factor) * time.Millisecond)
+					continue
 				}
-			}()
-		}
 
-		return nil
-	})
-
-	maelstromNode.Handle("read", func(msg maelstrom.Message) error {
-		payload := map[string]interface{}{
-			"type":     "read_ok",
-			"messages": messages,
-		}
-
-		if err := replayRPCReply(replayCount, time.Duration(waitPeriodInSeconds), maelstromNode, payload, func(maelstromNode *maelstrom.Node, payload map[string]interface{}) error {
-			if err := maelstromNode.Reply(msg, payload); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: Reply not okay for msg - %v", payload, "\n")
-				return err
+				break
 			}
-			return nil
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Error sending message [%v]\n", err)
+		}(j)
+	}
+}
+
+func Fault_tolerant_broadcast_v2() {
+	n := maelstrom.NewNode()
+
+	mu := &sync.Mutex{}
+	values := make(map[any]bool)
+	topology := make([]string, 0)
+
+	jobChan := make(chan job, 100)
+	pq := newPersistentQueue()
+
+	go consumeJobChannel(jobChan, pq, n)
+
+	n.Handle("broadcast", func(msg maelstrom.Message) error {
+		var body map[string]any
+		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
 
-		return nil
+		message := reflect.ValueOf(body["message"]).Float()
+		seen := false
+		mu.Lock()
+		_, ok := values[message]
+		if ok {
+			seen = true
+		} else {
+			values[message] = true
+		}
+		mu.Unlock()
+
+		if !seen {
+			for _, neighbor := range topology {
+				if neighbor != msg.Src {
+					fmt.Fprintf(os.Stderr, "Adding job, src - %v, dst - %v, message - %v\n", n.ID(), neighbor, message)
+					jobChan <- job{
+						Src:   n.ID(),
+						Dest:  neighbor,
+						Value: message,
+					}
+				}
+			}
+		}
+
+		return n.Reply(msg, map[string]any{"type": "broadcast_ok"})
 	})
 
-	maelstromNode.Handle("topology", func(msg maelstrom.Message) error {
-		reqBody := make(map[string]interface{})
-		if err := json.Unmarshal(msg.Body, &reqBody); err != nil {
-			fmt.Fprintf(os.Stderr, "Error unmarshalling message [%v]\n", err)
+	n.Handle("read", func(msg maelstrom.Message) error {
+		var body map[string]any
+		if err := json.Unmarshal(msg.Body, &body); err != nil {
 			return err
 		}
 
-		topology = reqBody["topology"].(map[string]interface{})
+		body = map[string]any{}
+		body["type"] = "read_ok"
 
-		if err := maelstromNode.Reply(msg, map[string]interface{}{
-			"type": "topology_ok",
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Error sending message [%v]\n", err)
-			return err
+		var keys []any
+		mu.Lock()
+		for k := range values {
+			keys = append(keys, k)
 		}
+		mu.Unlock()
 
-		return nil
+		body["messages"] = keys
+
+		return n.Reply(msg, body)
 	})
 
-	if err := maelstromNode.Run(); err != nil {
-		log.Fatal("Error running maelstrom node - ", err)
-		return
-	}
-}
-
-func replayRPCSend(replayCount int, waitPeriod time.Duration, maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string, replayFunc func(maelstromNode *maelstrom.Node, payload map[string]interface{}, dest string) error) error {
-	var err error
-	for replay := 0; replay < replayCount; {
-		if err = replayFunc(maelstromNode, payload, dest); err != nil {
-			replay++
-			time.Sleep(waitPeriod * time.Millisecond)
-		} else {
-			return nil
+	n.Handle("topology", func(msg maelstrom.Message) error {
+		var body map[string]any
+		if err := json.Unmarshal(msg.Body, &body); err != nil {
+			return err
 		}
-	}
 
-	return err
-}
-
-func replayRPCReply(replayCount int, waitPeriod time.Duration, maelstromNode *maelstrom.Node, payload map[string]interface{}, replayFunc func(maelstromNode *maelstrom.Node, payload map[string]interface{}) error) error {
-	var err error
-	for replay := 0; replay < replayCount; {
-		if err = replayFunc(maelstromNode, payload); err != nil {
-			replay++
-			time.Sleep(waitPeriod * time.Second)
-		} else {
-			return nil
+		topologyFromClient := body["topology"].(map[string]interface{})
+		for _, neighbor := range topologyFromClient[n.ID()].([]interface{}) {
+			topology = append(topology, neighbor.(string))
 		}
+
+		body = map[string]any{}
+		body["type"] = "topology_ok"
+
+		fmt.Fprintf(os.Stderr, "topo- %v", topology, "\n")
+
+		return n.Reply(msg, body)
+	})
+
+	if err := n.Run(); err != nil {
+		log.Fatal(err)
 	}
-
-	return err
-}
-
-func replayBroadcastAck(replayCount int, waitPeriod time.Duration, maelstromNode *maelstrom.Node, msg maelstrom.Message, replayFunc func(maelstromNode *maelstrom.Node, msg maelstrom.Message) error) error {
-	var err error
-	for replay := 0; replay < replayCount; {
-		if err = replayFunc(maelstromNode, msg); err != nil {
-			replay++
-			time.Sleep(waitPeriod * time.Second)
-		} else {
-			return nil
-		}
-	}
-
-	return err
 }
