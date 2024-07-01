@@ -151,7 +151,7 @@ func generateRandomWaitPeriod(nodeId string) int {
 
 	s2 := rand.NewSource(time.Now().UnixNano() + int64(nodeNumber*10))
 	r2 := rand.New(s2)
-	max, min := 300, 100
+	max, min := 100, 50
 	waitPeriod := r2.Intn(max-min) + min
 
 	fmt.Fprintf(os.Stderr, "Starting the node with wait period of %vms\n", waitPeriod)
