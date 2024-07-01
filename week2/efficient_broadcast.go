@@ -2,6 +2,7 @@ package week2
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -40,6 +41,13 @@ func Efficient_broadcast() {
 		waitPeriod := generateRandomWaitPeriod(n.ID())
 
 		go ln.askForMessagesAndWriteItOnLocal(n, waitPeriod)
+
+		if n.ID() == "n0" {
+			fmt.Fprintln(os.Stderr, "MST running...")
+			topology := MinimumSpanningTree(len(n.NodeIDs()))
+			ln.Topology = topology[n.ID()]
+			shareTopology(n, topology)
+		}
 
 		return nil
 	})
@@ -92,14 +100,13 @@ func Efficient_broadcast() {
 		}
 
 		topologyFromClient := body["topology"].(map[string]interface{})
+
 		for _, neighbor := range topologyFromClient[n.ID()].([]interface{}) {
 			ln.Topology = append(ln.Topology, neighbor.(string))
 		}
 
 		body = map[string]any{}
 		body["type"] = "topology_ok"
-
-		fmt.Fprintf(os.Stderr, "topo- %v", ln.Topology, "\n")
 
 		return n.Reply(msg, body)
 	})
@@ -139,6 +146,32 @@ func (node *Node) askForMessagesAndWriteItOnLocal(mn *maelstrom.Node, waitPeriod
 				fmt.Fprintf(os.Stderr, "Error getting messages from neighbor node - %v\n", neighbor)
 			}
 		}
+	}
+}
+
+func shareTopology(mn *maelstrom.Node, topology map[string][]string) {
+	payload := map[string]interface{}{
+		"type":     "topology",
+		"topology": topology,
+	}
+
+	for _, n := range mn.NodeIDs() {
+		// n0 Node shares the topology to every other node
+		if n == "n0" {
+			continue
+		}
+		mn.RPC(n, payload, func(msg maelstrom.Message) error {
+			var body map[string]any
+			if err := json.Unmarshal(msg.Body, &body); err != nil {
+				return err
+			}
+
+			if body["type"] != "topology_ok" {
+				return errors.New("error sharing topology")
+			}
+
+			return nil
+		})
 	}
 }
 
