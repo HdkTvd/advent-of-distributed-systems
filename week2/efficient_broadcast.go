@@ -99,16 +99,20 @@ func Efficient_broadcast() {
 			return err
 		}
 
+		replyBody := map[string]any{}
+		replyBody["type"] = "topology_ok"
+
+		if source, _ := body["source"].(string); source != "nodeServer" {
+			return n.Reply(msg, replyBody)
+		}
+
 		topologyFromClient := body["topology"].(map[string]interface{})
 
 		for _, neighbor := range topologyFromClient[n.ID()].([]interface{}) {
 			ln.Topology = append(ln.Topology, neighbor.(string))
 		}
 
-		body = map[string]any{}
-		body["type"] = "topology_ok"
-
-		return n.Reply(msg, body)
+		return n.Reply(msg, replyBody)
 	})
 
 	if err := n.Run(); err != nil {
@@ -153,6 +157,7 @@ func shareTopology(mn *maelstrom.Node, topology map[string][]string) {
 	payload := map[string]interface{}{
 		"type":     "topology",
 		"topology": topology,
+		"source":   "nodeServer",
 	}
 
 	for _, n := range mn.NodeIDs() {
