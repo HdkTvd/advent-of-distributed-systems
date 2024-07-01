@@ -12,6 +12,5 @@ func main() {
 	// week2.Single_node_broadcast()
 	// week2.Multi_node_broadcast()
 	// week2.Fault_tolerant_broadcast()
-	week2.Fault_tolerant_broadcast()
-	// week2.Fault_tolerant_broadcast_v3()
+	week2.Efficient_broadcast()
 }
