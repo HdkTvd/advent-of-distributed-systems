@@ -14,9 +14,8 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-// TODO:
 // 1. Do not broadcast msg, instead follow point 2.
-// 2. Keep track of messages on neighbouring nodes. After 100ms send the delta and receive all the messages at once?
+// 2. Keep track of messages on neighbouring nodes. After some period of time get all the messages from neighbours
 // no. of msgs per ops pre node is reduced.
 
 type Node struct {
@@ -110,7 +109,6 @@ func Efficient_broadcast() {
 	}
 }
 
-// TODO: get messages from neighbours every randmonly between 10-100 ms and add it in your values
 func (node *Node) askForMessagesAndWriteItOnLocal(mn *maelstrom.Node, waitPeriod int) {
 	for {
 		time.Sleep(time.Millisecond * time.Duration(waitPeriod))
@@ -126,8 +124,6 @@ func (node *Node) askForMessagesAndWriteItOnLocal(mn *maelstrom.Node, waitPeriod
 					return err
 				}
 
-				// TODO: syncro msg write to local variable
-				// to avoid same msg write compare length bcoz msg are not duplicate
 				if messages, ok := body["messages"].([]interface{}); ok && body["type"] == "read_ok" {
 					node.Mu.Lock()
 					for _, m := range messages {
