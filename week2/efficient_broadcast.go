@@ -67,16 +67,21 @@ func Efficient_broadcast() {
 		}
 
 		body = map[string]any{}
-		body["type"] = "read_ok"
 
-		var keys []any
-		ln.Mu.Lock()
-		for k := range ln.Values {
-			keys = append(keys, k)
+		if mc, ok := body["msg_count"].(int); ok && mc >= len(ln.Values) {
+			body["type"] = "read_no_content"
+		} else {
+			body["type"] = "read_ok"
+
+			var keys []any
+			ln.Mu.Lock()
+			for k := range ln.Values {
+				keys = append(keys, k)
+			}
+			ln.Mu.Unlock()
+
+			body["messages"] = keys
 		}
-		ln.Mu.Unlock()
-
-		body["messages"] = keys
 
 		return n.Reply(msg, body)
 	})
@@ -111,8 +116,8 @@ func (node *Node) askForMessagesAndWriteItOnLocal(mn *maelstrom.Node, waitPeriod
 		time.Sleep(time.Millisecond * time.Duration(waitPeriod))
 		for _, neighbor := range node.Topology {
 			payload := map[string]interface{}{
-				"type": "read",
-				// "msg_id": "",
+				"type":      "read",
+				"msg_count": len(node.Values),
 			}
 
 			if err := mn.RPC(neighbor, payload, func(msg maelstrom.Message) error {
@@ -121,17 +126,16 @@ func (node *Node) askForMessagesAndWriteItOnLocal(mn *maelstrom.Node, waitPeriod
 					return err
 				}
 
-				fmt.Fprintf(os.Stderr, "read resp body - %+v\n", body)
-
 				// TODO: syncro msg write to local variable
 				// to avoid same msg write compare length bcoz msg are not duplicate
-				messages, ok := body["messages"].([]interface{})
-				if ok && len(node.Values) < len(messages) {
+				if messages, ok := body["messages"].([]interface{}); ok && body["type"] == "read_ok" {
 					node.Mu.Lock()
 					for _, m := range messages {
 						node.Values[int(m.(float64))] = true
 					}
 					node.Mu.Unlock()
+
+					return nil
 				}
 
 				return nil
@@ -143,7 +147,6 @@ func (node *Node) askForMessagesAndWriteItOnLocal(mn *maelstrom.Node, waitPeriod
 }
 
 func generateRandomWaitPeriod(nodeId string) int {
-	// nodeId := n.ID()
 	nodeNumber, _ := strconv.Atoi(nodeId[len(nodeId)-1:])
 
 	s2 := rand.NewSource(time.Now().UnixNano() + int64(nodeNumber*10))
