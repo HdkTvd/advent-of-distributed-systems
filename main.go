@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/HdkTvd/advent-of-distributed-systems/c3"
+	"github.com/HdkTvd/advent-of-distributed-systems/c4"
 )
 
 func main() {
@@ -12,5 +12,6 @@ func main() {
 	// c3.Single_node_broadcast()
 	// c3.Multi_node_broadcast()
 	// c3.Fault_tolerant_broadcast()
-	c3.Efficient_broadcast()
+	// c3.Efficient_broadcast()
+	c4.GrowOnlyCoounter()
 }

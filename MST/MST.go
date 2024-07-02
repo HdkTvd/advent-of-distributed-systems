@@ -1,4 +1,4 @@
-package c3
+package mst
 
 import (
 	"math"

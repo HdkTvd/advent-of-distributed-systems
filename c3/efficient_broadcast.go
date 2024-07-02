@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	mst "github.com/HdkTvd/advent-of-distributed-systems/MST"
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
@@ -44,7 +45,7 @@ func Efficient_broadcast() {
 
 		if n.ID() == "n0" {
 			fmt.Fprintln(os.Stderr, "MST running...")
-			topology := MinimumSpanningTree(len(n.NodeIDs()))
+			topology := mst.MinimumSpanningTree(len(n.NodeIDs()))
 			ln.Topology = topology[n.ID()]
 			shareTopology(n, topology)
 		}
