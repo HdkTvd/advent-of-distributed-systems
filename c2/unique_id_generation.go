@@ -1,4 +1,4 @@
-package week1
+package c2
 
 import (
 	"encoding/json"

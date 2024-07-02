@@ -1,4 +1,4 @@
-package week2
+package c3
 
 import (
 	"math"

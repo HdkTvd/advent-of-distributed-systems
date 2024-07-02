@@ -1,16 +1,16 @@
 package main
 
 import (
-	"github.com/HdkTvd/advent-of-distributed-systems/week2"
+	"github.com/HdkTvd/advent-of-distributed-systems/c3"
 )
 
 func main() {
 	// Import challenges and test
 
-	// week0.Maelstrom_echo()
-	// week1.Unique_id_generation()
-	// week2.Single_node_broadcast()
-	// week2.Multi_node_broadcast()
-	// week2.Fault_tolerant_broadcast()
-	week2.Efficient_broadcast()
+	// c1.Maelstrom_echo()
+	// c2.Unique_id_generation()
+	// c3.Single_node_broadcast()
+	// c3.Multi_node_broadcast()
+	// c3.Fault_tolerant_broadcast()
+	c3.Efficient_broadcast()
 }
