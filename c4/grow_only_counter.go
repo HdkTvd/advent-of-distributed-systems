@@ -6,75 +6,34 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sync"
+	"strings"
 
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
-type Node struct {
-	Value    int
-	Topology []string
-	Mu       *sync.Mutex
-}
-
-func NewNode() *Node {
-	return &Node{Value: 0, Topology: make([]string, 0), Mu: &sync.Mutex{}}
-}
-
 func GrowOnlyCoounter() {
-	ln := NewNode()
+	// topology := make(map[string]interface{}, 0)
+
 	n := maelstrom.NewNode()
 	skv := maelstrom.NewSeqKV(n)
+
+	key := "counter"
 
 	n.Handle("read", func(msg maelstrom.Message) error {
 		ctx := context.Background()
 
-		var body map[string]any
-		if err := json.Unmarshal(msg.Body, &body); err != nil {
+		val, err := skv.ReadInt(ctx, key)
+		// It's important to ignore this error as it may occure initially
+		if err != nil && !strings.Contains(err.Error(), maelstrom.ErrorCodeText(maelstrom.KeyDoesNotExist)) {
+			fmt.Fprintf(os.Stderr, "Error in sequential counter read - %q\n", err.Error())
 			return err
 		}
 
-		body = map[string]any{}
-		body["type"] = "read_ok"
-
-		val, err := skv.ReadInt(ctx, "key")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error in sequential counter read - %v\n", err)
-			return err
-		}
-
-		body["value"] = val
-
-		return n.Reply(msg, body)
+		return n.Reply(msg, map[string]any{
+			"type":  "read_ok",
+			"value": val,
+		})
 	})
-
-	// n.Handle("broadcast", func(msg maelstrom.Message) error {
-	// 	ctx := context.Background()
-
-	// 	var body map[string]any
-	// 	if err := json.Unmarshal(msg.Body, &body); err != nil {
-	// 		return err
-	// 	}
-
-	// 	delta := int(body["value"].(float64))
-
-	// 	skv.CompareAndSwap(ctx, "key", )
-
-	// 	val := ln.Value + delta
-	// 	if err := skv.Write(ctx, "key", val); err != nil {
-	// 		fmt.Fprintf(os.Stderr, "Error in sequential counter read - %v\n", err)
-	// 		return err
-	// 	}
-
-	// 	ln.Mu.Lock()
-	// 	ln.Value = val
-	// 	ln.Mu.Unlock()
-
-	// 	body = map[string]any{}
-	// 	body["type"] = "add_ok"
-
-	// 	return n.Reply(msg, body)
-	// })
 
 	n.Handle("add", func(msg maelstrom.Message) error {
 		ctx := context.Background()
@@ -86,20 +45,24 @@ func GrowOnlyCoounter() {
 
 		delta := int(body["delta"].(float64))
 
-		val := ln.Value + delta
-		if err := skv.Write(ctx, "key", val); err != nil {
-			fmt.Fprintf(os.Stderr, "Error in sequential counter read - %v\n", err)
-			return err
+		// CAS ensures that the new value will only be updated if the old value also matches
+		// this helps avoid race conditions in concurrent enviroments.
+		// This loop guarantees the continuous retries even after the "key does not exist" error OR
+		// the read value does not match the value while udpating with error "error current value a is not x"
+		for {
+			currentVal, err := skv.ReadInt(ctx, key)
+			if err != nil && !strings.Contains(err.Error(), maelstrom.ErrorCodeText(maelstrom.KeyDoesNotExist)) {
+				fmt.Fprintf(os.Stderr, "Error in sequential counter read for add - %q\n", err.Error())
+				return err
+			}
+
+			newVal := currentVal + delta
+			if err := skv.CompareAndSwap(ctx, key, currentVal, newVal, true); err == nil {
+				break
+			}
 		}
 
-		ln.Mu.Lock()
-		ln.Value = val
-		ln.Mu.Unlock()
-
-		body = map[string]any{}
-		body["type"] = "add_ok"
-
-		return n.Reply(msg, body)
+		return n.Reply(msg, map[string]any{"type": "add_ok"})
 	})
 
 	n.Handle("topology", func(msg maelstrom.Message) error {
@@ -115,11 +78,7 @@ func GrowOnlyCoounter() {
 			return n.Reply(msg, replyBody)
 		}
 
-		topologyFromClient := body["topology"].(map[string]interface{})
-
-		for _, neighbor := range topologyFromClient[n.ID()].([]interface{}) {
-			ln.Topology = append(ln.Topology, neighbor.(string))
-		}
+		_ = body["topology"].(map[string]interface{})
 
 		return n.Reply(msg, replyBody)
 	})
