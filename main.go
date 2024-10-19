@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/HdkTvd/advent-of-distributed-systems/c4"
+	"github.com/HdkTvd/advent-of-distributed-systems/c5"
 )
 
 func main() {
@@ -13,5 +13,6 @@ func main() {
 	// c3.Multi_node_broadcast()
 	// c3.Fault_tolerant_broadcast()
 	// c3.Efficient_broadcast()
-	c4.GrowOnlyCoounter()
+	// c4.GrowOnlyCoounter()
+	c5.KafkaStyleLogSingleNode()
 }
