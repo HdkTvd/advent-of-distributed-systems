@@ -14,5 +14,6 @@ func main() {
 	// c3.Fault_tolerant_broadcast()
 	// c3.Efficient_broadcast()
 	// c4.GrowOnlyCoounter()
-	c5.KafkaStyleLogSingleNode()
+	// c5.KafkaStyleLogSingleNode()
+	c5.KafkaStyleLogMultiNode()
 }
