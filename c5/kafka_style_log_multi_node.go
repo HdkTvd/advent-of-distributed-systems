@@ -119,8 +119,8 @@ func KafkaStyleLogMultiNode() {
 
 			if logs != nil && startOffset < len(logs) {
 				data := make([][]int, 0)
-				for i, val := range logs {
-					data = append(data, []int{i, val})
+				for i := startOffset; i < len(logs); i++ {
+					data = append(data, []int{i, logs[i]})
 				}
 				response[key] = data
 			} else {
