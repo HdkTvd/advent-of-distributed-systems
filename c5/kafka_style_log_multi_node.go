@@ -102,18 +102,14 @@ func KafkaStyleLogMultiNode() {
 			// fmt.Fprintf(os.Stderr, "key %v | logs - %v \n", key, Node.logs[key])
 			fmt.Fprintf(os.Stderr, "individual polled offsets - %v \n", offset)
 
-			var logs []int
+			var logs [][]int
 			if err := seqKV.ReadInto(ctx, key, &logs); err != nil && !strings.Contains(err.Error(), maelstrom.ErrorCodeText(maelstrom.KeyDoesNotExist)) {
 				fmt.Fprintf(os.Stderr, "Failed to read data from seqKV fro key %q. ERR - [%v]", key, err)
 				continue
 			}
 
 			if logs != nil && startOffset < len(logs) {
-				data := make([][]int, 0)
-				for i := startOffset; i < len(logs); i++ {
-					data = append(data, []int{i, logs[i]})
-				}
-				response[key] = data
+				response[key] = logs[startOffset:]
 			} else {
 				response[key] = nil
 			}
@@ -185,12 +181,12 @@ func updateOffsetAndLog(ctx context.Context, key string, data int, newOffset *in
 		if err := linKV.CompareAndSwap(ctx, key, currentOffset, newOffset, true); err == nil {
 			// data input using seqKV store for common use case
 			for {
-				var currentLogs []int
+				var currentLogs [][]int
 				if err := seqKV.ReadInto(ctx, key, &currentLogs); err != nil && !strings.Contains(err.Error(), maelstrom.ErrorCodeText(maelstrom.KeyDoesNotExist)) {
 					return err
 				}
 
-				newLogs := append(currentLogs, data)
+				newLogs := append(currentLogs, []int{*newOffset, data})
 
 				if err := seqKV.CompareAndSwap(ctx, key, currentLogs, newLogs, true); err == nil {
 					break
