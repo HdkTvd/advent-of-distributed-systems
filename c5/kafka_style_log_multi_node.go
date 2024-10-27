@@ -12,6 +12,8 @@ import (
 	maelstrom "github.com/jepsen-io/maelstrom/demo/go"
 )
 
+// By default, node ID "n0" will be the leader, for simplicity
+
 func KafkaStyleLogMultiNode() {
 	n := maelstrom.NewNode()
 	seqKV := maelstrom.NewSeqKV(n)
@@ -25,6 +27,10 @@ func KafkaStyleLogMultiNode() {
 		mu:               sync.RWMutex{},
 	}
 
+	// No leader election algorithm used for simplicity
+	// TODO: Implement leader election algorithm
+	leader := "n0"
+
 	// handlers
 	n.Handle("send", func(msg maelstrom.Message) error {
 		ctx := context.Background()
@@ -37,53 +43,38 @@ func KafkaStyleLogMultiNode() {
 
 		key := body["key"].(string)
 		data := body["msg"].(float64)
+
 		var newOffset int
 
-		for {
-			var currentOffset int = -1
-			if err := linKV.ReadInto(ctx, key, &currentOffset); err != nil && !strings.Contains(err.Error(), maelstrom.ErrorCodeText(maelstrom.KeyDoesNotExist)) {
-				fmt.Fprintf(os.Stderr, "Error in linear offset read for send - %q\n", err.Error())
+		// current node is the leader
+		if n.ID() == leader {
+			if err := updateOffsetAndLog(ctx, key, int(data), &newOffset, linKV, seqKV); err != nil {
+				fmt.Fprintf(os.Stderr, "Error in updating offset and log for key %q - %q\n", key, err.Error())
 				return err
 			}
 
-			newOffset = currentOffset + 1
+			if err := n.Reply(msg, map[string]interface{}{
+				"type":   "send_ok",
+				"offset": newOffset,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to reply send_ok with new offset value - %q\n", err.Error())
+				return err
+			}
+		} else {
+			// Relay the message to the leader
+			replyMessage, err := n.SyncRPC(ctx, leader, msg.Body)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to replicate log to Leader %q with key %q - %q\n", leader, key, err.Error())
+				return err
+			}
 
-			fmt.Fprintf(os.Stderr, "new offset %v \n", newOffset)
-
-			if err := linKV.CompareAndSwap(ctx, key, currentOffset, newOffset, true); err == nil {
-				// TODO: data input using seqKV store for common use case
-				for {
-					var currentLogs []int
-					if err := seqKV.ReadInto(ctx, key, &currentLogs); err != nil && !strings.Contains(err.Error(), maelstrom.ErrorCodeText(maelstrom.KeyDoesNotExist)) {
-						fmt.Fprintf(os.Stderr, "Error in sequential offset read for a key %q - %q\n", key, err.Error())
-						return err
-					}
-
-					newLogs := append(currentLogs, int(data))
-
-					if err := seqKV.CompareAndSwap(ctx, key, currentLogs, newLogs, true); err == nil {
-						break
-					} else {
-						fmt.Fprintf(os.Stderr, "Failed to store value in seqKV - %v", err)
-					}
-				}
-
-				break
-			} else {
-				fmt.Fprintf(os.Stderr, "Failed to store value in linKV - %v", err)
+			if err := n.Reply(msg, replyMessage.Body); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to reply send_ok with new offset value - %q\n", err.Error())
+				return err
 			}
 		}
 
 		fmt.Fprintf(os.Stderr, "send_ok | newOffset - %v | key - %v\n", newOffset, key)
-
-		if err := n.Reply(msg, map[string]interface{}{
-			"type":   "send_ok",
-			"offset": newOffset,
-		}); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to reply send_ok with new offset value - %q\n", err.Error())
-			return err
-		}
-
 		return nil
 	})
 
@@ -178,4 +169,41 @@ func KafkaStyleLogMultiNode() {
 	if err := n.Run(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func updateOffsetAndLog(ctx context.Context, key string, data int, newOffset *int, linKV, seqKV *maelstrom.KV) error {
+	for {
+		var currentOffset int = -1
+		if err := linKV.ReadInto(ctx, key, &currentOffset); err != nil && !strings.Contains(err.Error(), maelstrom.ErrorCodeText(maelstrom.KeyDoesNotExist)) {
+			return err
+		}
+
+		(*newOffset) = currentOffset + 1
+
+		fmt.Fprintf(os.Stderr, "new offset %v \n", newOffset)
+
+		if err := linKV.CompareAndSwap(ctx, key, currentOffset, newOffset, true); err == nil {
+			// data input using seqKV store for common use case
+			for {
+				var currentLogs []int
+				if err := seqKV.ReadInto(ctx, key, &currentLogs); err != nil && !strings.Contains(err.Error(), maelstrom.ErrorCodeText(maelstrom.KeyDoesNotExist)) {
+					return err
+				}
+
+				newLogs := append(currentLogs, data)
+
+				if err := seqKV.CompareAndSwap(ctx, key, currentLogs, newLogs, true); err == nil {
+					break
+				} else {
+					fmt.Fprintf(os.Stderr, "Failed to store value in seqKV - %v", err)
+				}
+			}
+
+			break
+		} else {
+			fmt.Fprintf(os.Stderr, "Failed to store value in linKV - %v", err)
+		}
+	}
+
+	return nil
 }
