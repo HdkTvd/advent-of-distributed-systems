@@ -1,4 +1,6 @@
-# Solutions for advent-of-distributed-systems challenge
+# Solutions for advent-of-distributed-systems challenge in GO using jepsen-io/maelstrom
+<img src="https://go.dev/images/gophers/pilot-bust.svg" height="48" width="48"/>
+<img src="https://avatars.githubusercontent.com/u/19334403?s=48&v=4" height="48" width="48"/>
 
 Challenge link - [aods.cryingpotato.com](https://aods.cryingpotato.com/)
 
